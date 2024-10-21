@@ -68,18 +68,10 @@ We strive for excellence in everything we do, and we are looking for top-tier ta
 ## API Endpoints
 
 - **Get all assets or filter by host**:  
-  This endpoint returns all assets or filters them by the host parameter:
+  This endpoint returns all assets :
 
   ```http
   GET http://localhost:8080/assets
-  GET http://localhost:8080/assets?host=example
-  ```
-
-- **Get the total count of assets**:  
-  This endpoint returns the total number of assets in the database:
-
-  ```http
-  GET http://localhost:8080/assets/count
   ```
 
 ---

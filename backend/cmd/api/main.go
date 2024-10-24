@@ -1,11 +1,11 @@
 package main
 
 import (
-	"crypto/sha256"
-	"database/sql"
-	"encoding/hex"
+	"errors"
 	"fmt"
+	"interview/assets"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -14,62 +14,11 @@ import (
 
 const dbFileName = "assets.db"
 
-type Asset struct {
-	ID        int
-	Host      string
-	Comment   string
-	Owner     string
-	IPs       []IP
-	Ports     []Port
-	Signature string
-}
-
-type IP struct {
-	Address   string
-	Signature string
-}
-
-type Port struct {
-	Port      int
-	Signature string
-}
-
-func generateSignature(asset Asset) Asset {
-	data := asset.Host + asset.Comment + asset.Owner
-	hash := sha256.New()
-	hash.Write([]byte(data))
-	signature := hex.EncodeToString(hash.Sum(nil))
-
-	newAsset := asset
-	newAsset.Signature = signature
-
-	for i, ip := range newAsset.IPs {
-		ipData := ip.Address
-		hash := sha256.New()
-		hash.Write([]byte(ipData))
-		ip.Signature = hex.EncodeToString(hash.Sum(nil))
-
-		newAsset.IPs[i] = ip
-	}
-
-	for i, port := range newAsset.Ports {
-		portData := fmt.Sprintf("%d", port.Port)
-		hash := sha256.New()
-		hash.Write([]byte(portData))
-		port.Signature = hex.EncodeToString(hash.Sum(nil))
-
-		newAsset.Ports[i] = port
-	}
-
-	return newAsset
-}
-
 func main() {
-	db, err := sql.Open("sqlite3", dbFileName)
+	lookup, err := assets.NewLookup(dbFileName)
 	if err != nil {
 		panic(err)
 	}
-	defer db.Close()
 
 	router := gin.Default()
 
@@ -77,82 +26,60 @@ func main() {
 		AllowOrigins:     []string{"http://localhost:3000"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Accept"},
-		ExposeHeaders:    []string{"Content-Length"},
+		ExposeHeaders:    []string{"Content-Length", "Cache-Control"},
 		AllowCredentials: true,
 	}))
 
 	router.GET("/assets", func(c *gin.Context) {
-		assetID := c.Query("id")
-		var rows *sql.Rows
-		if assetID != "" {
-			rows, err = db.Query("SELECT id, host, comment, owner FROM assets WHERE id = ?", assetID)
-		} else {
-			rows, err = db.Query("SELECT id, host, comment, owner FROM assets")
+		params, err := getParams(c)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		}
-
+		result, err := lookup.Lookup(c, params)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
 		}
-		defer rows.Close()
-
-		var assets []Asset
-		for rows.Next() {
-			var id int
-			var host, comment, owner string
-			if err := rows.Scan(&id, &host, &comment, &owner); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-
-			var ips []IP
-			ipRows, err := db.Query("SELECT address FROM ips WHERE asset_id = ?", id)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-			defer ipRows.Close()
-			for ipRows.Next() {
-				var ipAddress string
-				if err := ipRows.Scan(&ipAddress); err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-					return
-				}
-				ips = append(ips, IP{Address: ipAddress})
-			}
-
-			var ports []Port
-			portRows, err := db.Query("SELECT port FROM ports WHERE asset_id = ?", id)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-			defer portRows.Close()
-			for portRows.Next() {
-				var portNum int
-				if err := portRows.Scan(&portNum); err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-					return
-				}
-				ports = append(ports, Port{Port: portNum})
-			}
-
-			asset := Asset{
-				ID:      id,
-				Host:    host,
-				Comment: comment,
-				Owner:   owner,
-				IPs:     ips,
-				Ports:   ports,
-			}
-
-			processedAsset := generateSignature(asset)
-
-			assets = append(assets, processedAsset)
-		}
-
-		c.JSON(http.StatusOK, assets)
+		c.Header("Cache-Control", "public, max-age=600")
+		c.JSON(http.StatusOK, result)
 	})
 
-	router.Run(":8080")
+	if err := router.Run(":8080"); err != nil {
+		panic(err)
+	}
+}
+
+func getParams(c *gin.Context) (assets.Params, error) {
+	limit := 10
+	var err error
+	if strLimit := c.Query("limit"); strLimit != "" {
+		if limit, err = strconv.Atoi(strLimit); err != nil {
+			return assets.Params{}, fmt.Errorf("invalid limit: %w", err)
+		}
+		if limit > 1000 {
+			return assets.Params{}, errors.New("limit must be <= 1000")
+		}
+	}
+	offset := 0
+	if strOffset := c.Query("offset"); strOffset != "" {
+		if offset, err = strconv.Atoi(strOffset); err != nil {
+			return assets.Params{}, fmt.Errorf("invalid offset: %w", err)
+		}
+	}
+	order := assets.SortOrderHost
+	if strOrder := c.Query("order"); strOrder != "" {
+		if parsed, ok := assets.ParseSortOrder(strOrder); !ok {
+			return assets.Params{}, fmt.Errorf("invalid order: '%s'", strOrder)
+		} else {
+			order = parsed
+		}
+	}
+	desc := c.Query("desc") == "true"
+	return assets.Params{
+		AssetID:   c.Query("id"),
+		Query:     c.Query("q"),
+		Limit:     limit,
+		Offset:    offset,
+		SortOrder: order,
+		SortDesc:  desc,
+	}, nil
 }

@@ -1,78 +1,164 @@
 'use client';
 
+import { Timer, X } from 'lucide-react';
+import { debounce } from 'next/dist/server/utils';
 import * as React from 'react';
-import { useState, useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
+
+import { client } from '@/lib/client';
+import { Params, Result, SortOrder } from '@/lib/types';
+
+import IconButton from '@/components/buttons/IconButton';
+import { Paginator } from '@/components/Paginator';
+import { Table } from '@/components/Table';
+import { Tooltip } from '@/components/Tooltip';
 
 import Logo from '~/svg/Logo.svg';
-import ButtonLink from '@/components/links/ButtonLink';
 
 export default function HomePage() {
-  const [data, setData] = useState<any[]>([]);
-  const [sortedData, setSortedData] = useState<any[]>([]);
-  const [isSorting, setIsSorting] = useState(false);
+  const [params, setParams] = useState<Params>({
+    limit: 10,
+    page: 1,
+    query: '',
+    order: 'host',
+    desc: false,
+  });
+  const [result, setResult] = useState<Result>({
+    assets: [],
+    totalCount: 0,
+  });
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadTime, setLoadTime] = useState<number>(0);
+  const mountedRef = useRef(true);
 
   useEffect(() => {
     async function fetchData() {
-      try {
-        const response = await fetch('http://localhost:8080/assets');
-        const result = await response.json();
-
-        setData(result);
-        sortData(result); // Automatically sort after fetching
-      } catch (err) {
-        console.error('Error fetching data:', err);
-      }
+      const start = performance.now();
+      setIsLoading(true);
+      const result = await client.request(params);
+      // check if a newer request is already in-flight, and if so discard the current result
+      if (!mountedRef.current) return null;
+      setResult(result);
+      setLoadTime(performance.now() - start);
+      setIsLoading(false);
     }
+    void fetchData();
+  }, [params]);
 
-    fetchData();
-  }, []);
-
-  const sortData = (fetchedData: any[]) => {
-    setIsSorting(true);
-    setTimeout(() => {
-      const newSortedData = [...fetchedData].sort((a, b) => a.Host.localeCompare(b.Host));
-      setSortedData(newSortedData);
-      setIsSorting(false);
-    }, 1000); // Artificial delay to slow down sorting
+  const setPage = (page: number) => {
+    setParams({ ...params, page });
   };
 
-  const renderedData = sortedData.map((item, index) => {
-    return (
-        <div key={index} className="p-4">
-          <p>{`ID: ${item.ID}`}</p>
-          <p>{`Host: ${item.Host}`}</p>
-          <p>{`Comment: ${item.Comment}`}</p>
-          <p>{`Owner: ${item.Owner}`}</p>
-          <p>{`IPs: ${(item.IPs || []).map((ip: any) => ip.Address).join(', ')}`}</p>
-          <p>{`Ports: ${(item.Ports || []).map((port: any) => port.Port).join(', ')}`}</p>
-        </div>
-    );
-  });
+  // these setter methods will redirect to page 1 when changing the query, limit, or order
+  const setQuery = debounce((query: string) => {
+    setParams({ ...params, page: 1, query });
+  }, 300);
+
+  const setLimit = (limit: number) => {
+    setParams({ ...params, page: 1, limit });
+  };
+
+  const setOrder = (order: SortOrder, desc: boolean) => {
+    setParams({ ...params, page: 1, order, desc });
+  };
+
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  const paginator = (
+    <Paginator
+      page={params.page ?? 1}
+      limit={params.limit ?? 10}
+      totalCount={result.totalCount}
+      setPage={setPage}
+      setLimit={setLimit}
+    />
+  );
 
   return (
-      <main>
-        <section className='bg-white'>
-          <div className='layout relative flex min-h-screen flex-col items-center justify-center py-12 text-center'>
-            <Logo className='w-16' />
-            <h1 className='mt-4'>Code challenge</h1>
+    <main>
+      <section className='bg-white'>
+        <div className='layout relative flex min-h-screen flex-col py-4'>
+          <header className='text-left border-gray-400 border-b-2 pb-4 mb-2'>
+            <Logo className='w-8 float-left mr-2' />
+            <h1 className='float-left text-2xl'>Code challenge</h1>
+            {!isLoading ? (
+              <span className='float-right text-gray-600'>
+                <span className='inline-block mt-2 italic'>
+                  {Intl.NumberFormat('en-us').format(loadTime)}ms
+                </span>
+                <Timer className='inline-block ml-1 -mt-1' />
+              </span>
+            ) : (
+              <span></span>
+            )}
+          </header>
 
-            <p className='mt-2 text-sm text-gray-800'>
-              You have complete freedom to present the data here.
-            </p>
-
-            <ButtonLink className='mt-6' href='/components' variant='light'>
-              See all included components
-            </ButtonLink>
-
-            <div className="mt-8 w-full max-w-2xl mx-auto bg-gray-100 p-4">
-              {sortedData.length === 0 ? (
-                  <p>{isSorting ? 'Sorting...' : 'Loading...'}</p>
-              ) : (
-                  <div>{renderedData}</div>
-              )}
-            </div>
+          <div className='h-10'>
+            <input
+              type='text'
+              placeholder='Search'
+              className='form-input py-1 mt-1 float-left'
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                // remove any irrelevant characters from the search query
+                const value = e.target.value.replace(/[^a-z0-9.]/gi, '');
+                if (value !== e.target.value) {
+                  e.target.value = value;
+                }
+                setQuery(value);
+              }}
+              ref={searchInputRef}
+            />
+            {searchInputRef?.current?.value ? (
+              <Tooltip
+                className='inline-block'
+                tooltipChildren={<span>Clear</span>}
+                tooltipClassName='left-0 top-full mt-3'
+              >
+                <IconButton
+                  icon={X}
+                  className='ml-1 mt-1 p-0 float-left border-red-300 text-red-500'
+                  variant='ghost'
+                  onClick={() => {
+                    if (searchInputRef?.current?.value) {
+                      searchInputRef.current.value = '';
+                    }
+                    setQuery('');
+                  }}
+                />
+              </Tooltip>
+            ) : (
+              <span></span>
+            )}
+            {paginator}
           </div>
-        </section>
-      </main>
+
+          <div className='mt-2 w-full mx-auto'>
+            <div className='w-full border-gray-400 border-t-2'>
+              <div className='h-1 w-full bg-gray-200 overflow-hidden'>
+                {isLoading ? (
+                  <div className='animate-progress w-full h-full bg-blue-500 origin-left-right'></div>
+                ) : (
+                  <div></div>
+                )}
+              </div>
+            </div>
+            {result.assets.length > 0 ? (
+              <div>
+                <Table
+                  assets={result.assets}
+                  params={params}
+                  setOrder={setOrder}
+                />
+                {paginator}
+              </div>
+            ) : !isLoading ? (
+              <div className='p-4 italic'>No results</div>
+            ) : (
+              <div></div>
+            )}
+          </div>
+        </div>
+      </section>
+    </main>
   );
 }

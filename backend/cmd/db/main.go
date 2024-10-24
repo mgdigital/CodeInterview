@@ -103,8 +103,8 @@ func main() {
 	}
 	defer insertPortStmt.Close()
 
-	// Insert data: 100.000 rows
-	totalEntries := 10000
+	// Insert data: 250.000 rows
+	totalEntries := 250_000
 	for i := 0; i < totalEntries; i++ {
 		// Insert asset
 		host := fmt.Sprintf("%s.%s", randomWord(), randomDomain())
